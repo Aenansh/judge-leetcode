@@ -1,0 +1,160 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id String @id @default(cuid())
+
+  email     String @unique
+  name      String
+  firstName String
+  lastName  String
+  password  String
+
+  noOfQuestionsSolved Int @default(0)
+
+  submissions Submission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Question {
+  id String @id @default(cuid())
+
+  title       String
+  slug        String         @unique
+  description String
+  difficulty  DifficultyType
+
+  category CategoryType[]
+
+  timeLimit   Int @default(2000)
+  memoryLimit Int @default(256)
+
+  noOfSubmissions  Int @default(0)
+  noOfPeopleSolved Int @default(0)
+
+  submissions Submission[]
+  testcases   Testcase[]
+  codestubs   Codestub[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([difficulty])
+  @@index([category])
+}
+
+model Submission {
+  id String @id @default(cuid())
+
+  code     String       @db.Text
+  language LanguageType
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  timeTaken  Int @default(0)
+  memoryUsed Int @default(0)
+
+  testcasesPassed Int @default(0)
+  totalTestcases  Int @default(0)
+
+  errorLog String?
+  result   ResultType
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, questionId])
+  @@index([questionId])
+}
+
+model Testcase {
+  id String @id @default(cuid())
+
+  input          String  @db.Text
+  expectedOutput String  @db.Text
+  isHidden       Boolean
+
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+}
+
+model Codestub {
+  id String @id @default(cuid())
+
+  userSnippet String @db.Text
+  driverCode  String @db.Text
+
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  language LanguageType
+
+  @@unique([questionId, language])
+}
+
+enum ResultType {
+  PENDING
+  RUNNING
+  SUCCESS
+  WRONG
+  RUNTIME_ERROR
+  COMPILE_ERROR
+  TIME_LIMIT_EXCEEDED
+  MEMORY_LIMIT_EXCEEDED
+}
+
+enum DifficultyType {
+  EASY
+  MEDIUM
+  HARD
+}
+
+enum LanguageType {
+  CPP
+  C
+  JAVA
+  PYTHON
+  JAVASCRIPT
+  TYPESCRIPT
+}
+
+enum CategoryType {
+  ARRAY
+  STRING
+  HASH_TABLE
+  LINKED_LIST
+  TREE
+  GRAPH
+  DYNAMIC_PROGRAMMING
+  GREEDY
+  TRIE
+  STACK
+  QUEUE
+  MATH
+  PREFIX_SUM
+  BINARY_SEARCH
+  SORT
+  DIVIDE_AND_CONQUER
+  BIT_MANIPULATION
+  DEPTH_FIRST_SEARCH
+  BREADTH_FIRST_SEARCH
+  BACKTRACKING
+}
