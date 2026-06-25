@@ -34,7 +34,7 @@ model Question {
 
   title       String
   slug        String         @unique
-  description String
+  description String         @db.Text
   difficulty  DifficultyType
 
   category CategoryType[]

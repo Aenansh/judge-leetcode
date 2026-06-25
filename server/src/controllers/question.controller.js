@@ -1,5 +1,5 @@
 import slug from "slug";
-import prisma from "../config/db.config";
+import prisma from "../config/db.config.js";
 
 const createQuestion = async (req, res) => {
   try {
@@ -43,7 +43,7 @@ const createQuestion = async (req, res) => {
     return res.status(201).json(question);
   } catch (error) {
     console.log("Error in creating question.", error.message);
-    return res.status(500).json(error.message);
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 };
 
@@ -65,6 +65,12 @@ const fetchQuestions = async (req, res) => {
         take: take,
         skip: skip,
         orderBy: { number: "desc" },
+        select: {
+          id: true,
+          title: true,
+          difficulty: true,
+          number: true,
+        },
       }),
     ]);
 
@@ -77,7 +83,7 @@ const fetchQuestions = async (req, res) => {
     });
   } catch (error) {
     console.log("Error in fetching question.", error.message);
-    return res.status(500).json(error.message);
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 };
 

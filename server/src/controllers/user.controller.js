@@ -38,7 +38,7 @@ const registerUser = async (req, res) => {
       .json({ message: "Registered successfully!", user: newUser.id });
   } catch (error) {
     console.log("Error in registering.", error.message);
-    return res.status(500).json(error.message);
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 };
 
@@ -69,7 +69,7 @@ const loginUser = async (req, res) => {
       .json({ message: "User logged in.", user: userExists.id });
   } catch (error) {
     console.log("Error in logging in.", error.message);
-    return res.status(500).json(error.message);
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 };
 
