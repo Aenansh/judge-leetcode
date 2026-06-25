@@ -16,8 +16,10 @@ app.use(
 
 import userRouter from "./routes/user.route.js";
 import questionRouter from "./routes/question.route.js";
+import submissionRouter from "./routes/submission.route.js";
 
 app.use("/api/v1/users", userRouter);
 app.use("/api/v1/questions", questionRouter);
+app.use("/api/v1/submissions", submissionRouter);
 
 export default app;

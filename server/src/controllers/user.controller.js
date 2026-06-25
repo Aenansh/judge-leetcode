@@ -1,5 +1,6 @@
 import prisma from "../config/db.config.js";
 import bcrypt from "bcrypt";
+import createToken from "../utils/token.util.js";
 
 const registerUser = async (req, res) => {
   try {
@@ -9,7 +10,7 @@ const registerUser = async (req, res) => {
         (e) => typeof e !== "string" || !e.trim(),
       )
     ) {
-      return res.status(400).json({ error: "All fields are required.0" });
+      return res.status(400).json({ error: "All fields are required." });
     }
 
     const userExists = await prisma.user.findUnique({
@@ -31,6 +32,15 @@ const registerUser = async (req, res) => {
         lastName,
         password: encryptedPassword,
       },
+    });
+
+    const accessToken = createToken(newUser.id, name, email);
+
+    res.cookie("access_token", accessToken, {
+      maxAge: 3 * 24 * 60 * 60 * 1000,
+      httpOnly: true,
+      sameSite: "strict",
+      secure: process.env.NODE_ENV === "production",
     });
 
     return res
@@ -63,6 +73,15 @@ const loginUser = async (req, res) => {
     if (!(await bcrypt.compare(password, userExists.password))) {
       return res.status(400).json({ error: "Incorrect password." });
     }
+
+    const accessToken = createToken(userExists.id, userExists.name, email);
+
+    res.cookie("access_token", accessToken, {
+      maxAge: 3 * 24 * 60 * 60 * 1000,
+      httpOnly: true,
+      sameSite: "strict",
+      secure: process.env.NODE_ENV === "production",
+    });
 
     return res
       .status(200)
