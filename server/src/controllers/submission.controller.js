@@ -125,4 +125,58 @@ const fetchQuestionSubmission = async (req, res) => {
   }
 };
 
-export { createSubmission, fetchUserSubmission, fetchQuestionSubmission };
+const fetchSubmissionById = async (req, res) => {
+  try {
+    const { submissionId } = req.params;
+    const userId = req.user.id;
+
+    if (typeof submissionId !== "string" || !submissionId.trim()) {
+      return res.status(400).json({ error: "No user ID provided." });
+    }
+
+    const submission = await prisma.submission.findUnique({
+      where: { id: submissionId },
+      select: {
+        id: true,
+        code: true,
+        language: true,
+        timeTaken: true,
+        memoryUsed: true,
+        testcasesPassed: true,
+        totalTestcases: true,
+        createdAt: true,
+        errorLog: true,
+        result: true,
+        userId: true,
+      },
+    });
+
+    if (!submission) {
+      return res.status(404).json({ error: "Submission not found." });
+    }
+
+    const isOwner = submission.userId === userId;
+    const isSuccessful = submission.result === "SUCCESS";
+
+    if (!isOwner && !isSuccessful) {
+      return res.status(403).json({
+        error:
+          "You can only view other users' code if they successfully solved the problem.",
+      });
+    }
+
+    delete submission.userId;
+
+    return res.status(200).json(submission);
+  } catch (error) {
+    console.log("Error in fetching submission by ID.", error.message);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+export {
+  createSubmission,
+  fetchUserSubmission,
+  fetchQuestionSubmission,
+  fetchSubmissionById,
+};
