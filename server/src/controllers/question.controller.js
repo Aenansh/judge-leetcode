@@ -87,4 +87,45 @@ const fetchQuestions = async (req, res) => {
   }
 };
 
-export { createQuestion, fetchQuestions };
+const fetchQuestionById = async (req, res) => {
+  try {
+    const { questionId } = req.params;
+
+    if (!questionId?.trim()) {
+      return res.status(400).json({ error: "Question ID is required." });
+    }
+
+    const question = await prisma.question.findUnique({
+      where: {
+        id: questionId,
+      },
+      include: {
+        testcases: {
+          where: { isHidden: false },
+          select: {
+            id: true,
+            input: true,
+            expectedOutput: true,
+          },
+        },
+        codestubs: {
+          select: {
+            userSnippet: true,
+            language: true,
+          },
+        },
+      },
+    });
+
+    if (!question) {
+      return res.status(404).json({ error: "Question not found" });
+    }
+
+    return res.status(200).json(question);
+  } catch (error) {
+    console.log("Error in fetching question by ID.", error.message);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+export { createQuestion, fetchQuestions, fetchQuestionById };
