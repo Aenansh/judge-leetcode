@@ -14,4 +14,10 @@ app.use(
   }),
 );
 
+import userRouter from "./routes/user.route.js";
+import questionRouter from "./routes/question.route.js";
+
+app.use("/api/v1/users", userRouter);
+app.use("/api/v1/questions", questionRouter);
+
 export default app;
