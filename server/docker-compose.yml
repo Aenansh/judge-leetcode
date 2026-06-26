@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # 1. The Redis Cache & Queue Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: judge_redis
+    ports:
+      - "6379:6379"
+    command: redis-server --save "" --loglevel warning
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # 2. The API Server
+  api:
+    build: .
+    container_name: judge_api
+    command: npm run start:api
+    ports:
+      - "3000:3000"
+    env_file: 
+      - .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # 3. The Run Worker
+  worker-run:
+    build: .
+    container_name: judge_worker_run
+    command: npm run start:worker:run
+    env_file: 
+      - .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # 4. The Submission Worker
+  worker-sub:
+    build: .
+    container_name: judge_worker_sub
+    command: npm run start:worker:sub
+    env_file: 
+      - .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+volumes:
+  redis_data:

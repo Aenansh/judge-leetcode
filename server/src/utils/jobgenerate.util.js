@@ -3,6 +3,24 @@ import * as k8s from "@kubernetes/client-node";
 const kc = new k8s.KubeConfig();
 kc.loadFromDefault();
 
+const cluster = kc.getCurrentCluster();
+if (cluster) {
+  cluster.skipTLSVerify = true;
+} else {
+  kc.loadFromOptions({
+    clusters: [
+      {
+        name: "local-docker",
+        server: "http://host.docker.internal:8080",
+        skipTLSVerify: true,
+      },
+    ],
+    users: [{ name: "dev" }],
+    contexts: [{ name: "dev-context", cluster: "local-docker", user: "dev" }],
+    currentContext: "dev-context",
+  });
+}
+
 const k8sBatchApi = kc.makeApiClient(k8s.BatchV1Api);
 const k8sCoreApi = kc.makeApiClient(k8s.CoreV1Api);
 
@@ -12,7 +30,7 @@ const LANGUAGE_CONFIG = {
   CPP: {
     image: "gcc:latest",
     command: (code, input) =>
-      `echo "${b64Encode(code)}" | base64 -d > main.cpp && echo "${b64Encode(input)}" | base64 -d > in.txt && g++ main.cpp -o main && ./main < in.txt`,
+      `cd /tmp && echo "${b64Encode(code)}" | base64 -d > main.cpp && echo "${b64Encode(input)}" | base64 -d > in.txt && g++ main.cpp -o main 2> build_error.txt && if [ -f main ]; then ./main < in.txt; else cat build_error.txt; fi`,
   },
   C: {
     image: "gcc:latest",
@@ -48,35 +66,45 @@ const watchJobAndGetLogs = async (namespace, jobName) => {
   for (let i = 0; i < maxRetries; i++) {
     await new Promise((resolve) => setTimeout(resolve, delay));
 
-    const res = await k8sBatchApi.readNamespacedJobStatus(jobName, namespace);
-    const status = res.body.status;
+    const res = await k8sBatchApi.readNamespacedJobStatus({
+      name: jobName,
+      namespace: namespace
+    });
+    const jobData = res.body || res;
+    const status = jobData.status;
 
-    if (status.succeeded || status.failed) {
-      const pods = await k8sCoreApi.listNamespacedPod(
-        namespace,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        `job-name=${jobName}`,
-      );
+    if (status && (status.succeeded || status.failed)) {
+      const podRes = await k8sCoreApi.listNamespacedPod({
+        namespace: namespace,
+        labelSelector: `job-name=${jobName}`,
+      });
 
-      if (pods.body.items.length === 0)
+      const podData = podRes.body || podRes;
+
+      if (!podData.items || podData.items.length === 0) {
         throw new Error("Execution Pod not found.");
-      const podName = pods.body.items[0].metadata.name;
-
-      if (status.failed) {
-        throw new Error("Time Limit Exceeded or Execution Error.");
       }
 
-      const logRes = await k8sCoreApi.readNamespacedPodLog(podName, namespace);
-      return logRes.body.trim();
+      const podName = podData.items[0].metadata.name;
+
+      if (status.failed) {
+        console.log(status);
+        throw new Error("Time Limit Exceeded or Execution Error.");
+      }
+      const logRes = await k8sCoreApi.readNamespacedPodLog({
+        name: podName,
+        namespace: namespace,
+      });
+      const logText = logRes.body !== undefined ? logRes.body : logRes;
+
+      return typeof logText === "string" ? logText.trim() : "";
     }
   }
   throw new Error("Job tracking timed out.");
 };
 
 export const executeInK8s = async (code, language, input, runId) => {
+  console.log(code);
   const namespace = "default";
   const jobName = `job-${runId.toLowerCase()}`;
 
@@ -94,7 +122,7 @@ export const executeInK8s = async (code, language, input, runId) => {
     kind: "Job",
     metadata: { name: jobName, namespace },
     spec: {
-      activeDeadlineSeconds: 10,
+      activeDeadlineSeconds: 120,
       backoffLimit: 0,
       template: {
         spec: {
@@ -105,7 +133,7 @@ export const executeInK8s = async (code, language, input, runId) => {
               command: ["sh", "-c", compileAndRunCmd],
               resources: {
                 limits: {
-                  memory: "256Mi",
+                  memory: "512Mi",
                   cpu: "500m",
                 },
               },
@@ -118,7 +146,10 @@ export const executeInK8s = async (code, language, input, runId) => {
   };
 
   try {
-    await k8sBatchApi.createNamespacedJob(namespace, jobManifest);
+    await k8sBatchApi.createNamespacedJob({
+      namespace: namespace,
+      body: jobManifest,
+    });
     const output = await watchJobAndGetLogs(namespace, jobName);
     return { success: true, output };
   } catch (error) {
@@ -128,15 +159,19 @@ export const executeInK8s = async (code, language, input, runId) => {
       error: error.message || "Compilation or Runtime Error",
     };
   } finally {
-    try {
-      await k8sBatchApi.deleteNamespacedJob(jobName, namespace, {
-        propagationPolicy: "Background",
-      });
-    } catch (cleanupError) {
-      console.error(
-        `Failed to clean up K8s job ${jobName}:`,
-        cleanupError.message,
-      );
-    }
+    // try {
+    //   await k8sBatchApi.deleteNamespacedJob({
+    //     name: jobName,
+    //     namespace: namespace,
+    //     body: {
+    //       propagationPolicy: "Background",
+    //     },
+    //   });
+    // } catch (cleanupError) {
+    //   console.error(
+    //     `Failed to clean up K8s job ${jobName}:`,
+    //     cleanupError.message,
+    //   );
+    // }
   }
 };

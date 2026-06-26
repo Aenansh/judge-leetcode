@@ -7,7 +7,10 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "dev": "nodemon --watch src/index.js"
+    "dev": "nodemon --watch src/index.js",
+    "start": "node src/index.js",
+    "start:api": "node src/index.js",
+    "start:worker": "node src/bullmq/worker.js"
   },
   "dependencies": {
     "@kubernetes/client-node": "^1.4.0",

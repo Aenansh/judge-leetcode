@@ -148,7 +148,7 @@ export const submissionWorker = new Worker(
         }
 
         if (result.output !== tc.expectedOutput) {
-          finalVerdict = "WRONG_ANSWER";
+          finalVerdict = "WRONG";
           errorLog = `Failed on testcase ${idx + 1}.`;
           break;
         }
