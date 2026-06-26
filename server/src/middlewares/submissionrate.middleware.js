@@ -1,3 +1,5 @@
+import redis from "../config/redis.config.js";
+
 const rateLimitSubmission = async (req, res, next) => {
   try {
     const userId = req.body.userId || req.user?.id;

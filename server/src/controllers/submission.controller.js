@@ -1,5 +1,7 @@
-import submissionQueue from "../bullmq/producer.js";
+import { runQueue, submissionQueue } from "../bullmq/producer.js";
 import prisma from "../config/db.config.js";
+import crypto from "crypto";
+import redis from "../config/redis.config.js";
 
 const createSubmission = async (req, res) => {
   try {
@@ -174,9 +176,66 @@ const fetchSubmissionById = async (req, res) => {
   }
 };
 
+const runCode = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    if (!userId) {
+      return res.status(400).json({
+        error: "User not authenticated, log in before submitting code.",
+      });
+    }
+
+    const { questionId } = req.params;
+    const { code, language, customInput } = req.body;
+
+    if (
+      [questionId, code, language].some(
+        (e) => typeof e !== "string" || !e.trim(),
+      )
+    ) {
+      return res
+        .status(400)
+        .json({ error: "No question ID or language provided." });
+    }
+
+    const formattedLanguage = language.trim().toUpperCase();
+    const runId = crypto.randomUUID();
+
+    const initialState = JSON.stringify({ status: "PENDING" });
+    await redis.set(`run:${runId}`, initialState, "EX", 300);
+
+    runQueue.add(
+      "code_to_run",
+      {
+        code,
+        runId,
+        language: formattedLanguage,
+        userId,
+        questionId,
+        customInput,
+      },
+      {
+        jobId: runId,
+        removeOnComplete: true,
+        removeOnFail: true,
+      },
+    );
+
+    return res.status(202).json({
+      message: "Code queued for test run.",
+      runId: runId,
+      status: "PENDING",
+    });
+  } catch (error) {
+    console.log("Error in running code.", error.message);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
 export {
   createSubmission,
   fetchUserSubmission,
   fetchQuestionSubmission,
   fetchSubmissionById,
+  runCode,
 };

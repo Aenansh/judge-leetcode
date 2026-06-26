@@ -7,6 +7,6 @@ export const connection = {
 };
 
 const runQueue = new Queue("run_queue", { connection });
-const submissionProducer = new Queue("submission_queue", { connection });
+const submissionQueue = new Queue("submission_queue", { connection });
 
-export default submissionProducer;
+export { runQueue, submissionQueue };

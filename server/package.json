@@ -10,6 +10,7 @@
     "dev": "nodemon --watch src/index.js"
   },
   "dependencies": {
+    "@kubernetes/client-node": "^1.4.0",
     "@prisma/adapter-neon": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "bcrypt": "^6.0.0",
