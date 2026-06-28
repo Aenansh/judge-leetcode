@@ -52,11 +52,11 @@ const LANGUAGE_CONFIG = {
       `cd /sandbox && printf "%s" "${b64Encode(input)}" | base64 -d > in.txt && timeout 5s ./app.bin < in.txt`,
   },
   JAVA: {
-    image: "openjdk:17",
+    image: "eclipse-temurin:17-jdk-alpine",
     compile: (code) =>
       `mkdir -p /sandbox && cd /sandbox && printf "%s" "${b64Encode(code)}" | base64 -d > Main.java && javac Main.java > build.log 2>&1 || (cat build.log >&2 && exit 1)`,
     run: (input) =>
-      `cd /sandbox && printf "%s" "${b64Encode(input)}" | base64 -d > in.txt && timeout 5s java Main < in.txt`,
+      `cd /sandbox && printf "%s" "${b64Encode(input)}" | base64 -d > in.txt && timeout 5s java -Xmx128m -XX:+UseSerialGC -Djava.awt.headless=true Main < in.txt`,
   },
   PYTHON: {
     image: "python:3.11-slim",
@@ -74,10 +74,15 @@ const LANGUAGE_CONFIG = {
   },
   TYPESCRIPT: {
     image: "node:20-alpine",
-    compile: (code) =>
-      `mkdir -p /sandbox && cd /sandbox && printf "%s" "${b64Encode(code)}" | base64 -d > main.ts`,
+    compile: (code) => `
+      mkdir -p /sandbox && cd /sandbox && \
+      apk add --no-cache npm > /dev/null 2>&1 && \
+      npm install typescript @types/node > /dev/null 2>&1 && \
+      printf "%s" "${b64Encode(code)}" | base64 -d > main.ts && \
+      npx tsc main.ts --target es6 --module commonjs --types node --typeRoots ./node_modules/@types --esModuleInterop > build.log 2>&1 || (cat build.log && exit 1)`,
+
     run: (input) =>
-      `cd /sandbox && printf "%s" "${b64Encode(input)}" | base64 -d > in.txt && timeout 5s npx --yes tsx main.ts < in.txt`,
+      `cd /sandbox && printf "%s" "${b64Encode(input)}" | base64 -d > in.txt && timeout 5s node main.js < in.txt`,
   },
 };
 
@@ -93,6 +98,21 @@ export class ExecutionSandbox {
   async init() {
     if (!this.config) throw new Error(`Unsupported Language: ${this.language}`);
 
+    const TIMEOUT_THRESHOLDS = {
+      PYTHON: 5000,
+      JAVASCRIPT: 5000,
+      CPP: 7000,
+      JAVA: 15000,
+      C: 15000,
+      TYPESCRIPT: 10000,
+    };
+
+    const timeoutLimitMs = TIMEOUT_THRESHOLDS[this.language] || 15000;
+    const maxIterations = Math.ceil(timeoutLimitMs / 500);
+
+    const memoryLimit = this.language === "JAVA" ? "512Mi" : "256Mi";
+    const cpuLimit = this.language === "JAVA" ? "1000m" : "500m";
+
     const podManifest = {
       apiVersion: "v1",
       kind: "Pod",
@@ -104,7 +124,7 @@ export class ExecutionSandbox {
             image: this.config.image,
             command: ["sleep", "3600"],
             resources: {
-              limits: { memory: "1Gi", cpu: "1000m" },
+              limits: { memory: memoryLimit, cpu: cpuLimit },
             },
           },
         ],
@@ -123,7 +143,7 @@ export class ExecutionSandbox {
       );
     }
 
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < maxIterations; i++) {
       await new Promise((r) => setTimeout(r, 500));
 
       try {
@@ -153,7 +173,9 @@ export class ExecutionSandbox {
         }
       }
     }
-    throw new Error("Sandbox creation timed out.");
+    throw new Error(
+      `Sandbox creation timed out after ${timeoutLimitMs / 1000} seconds.`,
+    );
   }
 
   async execCommand(commandStr) {

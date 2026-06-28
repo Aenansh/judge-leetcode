@@ -166,7 +166,7 @@ export const submissionWorker = new Worker(
     console.log(`\n================================================`);
     console.log(`[Submission Worker] Grading Official Entry: ${submissionId}`);
 
-    const sandbox = new ExecutionSandbox(submissionId, language);
+    const sandbox = new ExecutionSandbox(submissionId, language); 
 
     try {
       await prisma.submission.update({
