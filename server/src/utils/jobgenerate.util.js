@@ -1,9 +1,9 @@
 import * as k8s from "@kubernetes/client-node";
+import stream from "stream";
 
 const kc = new k8s.KubeConfig();
 try {
   kc.loadFromDefault();
-
   const cluster = kc.getCurrentCluster();
   if (cluster) {
     cluster.skipTLSVerify = true;
@@ -31,165 +31,198 @@ try {
   });
 }
 
-const k8sBatchApi = kc.makeApiClient(k8s.BatchV1Api);
 const k8sCoreApi = kc.makeApiClient(k8s.CoreV1Api);
+const exec = new k8s.Exec(kc);
 
 const b64Encode = (str) => Buffer.from(str).toString("base64");
 
 const LANGUAGE_CONFIG = {
   CPP: {
     image: "gcc:latest",
-    command: (code, input) =>
-      `cd /tmp && echo "${b64Encode(code)}" | base64 -d > main.cpp && echo "${b64Encode(input)}" | base64 -d > in.txt && g++ main.cpp -o main 2> build_error.txt; if [ -f main ]; then ./main < in.txt; else cat build_error.txt >&2; exit 1; fi`,
+    compile: (code) =>
+      `mkdir -p /sandbox && cd /sandbox && printf "%s" "${b64Encode(code)}" | base64 -d > main.cpp && g++ main.cpp -o app.bin > build.log 2>&1 || (cat build.log >&2 && exit 1)`,
+    run: (input) =>
+      `cd /sandbox && printf "%s" "${b64Encode(input)}" | base64 -d > in.txt && timeout 5s ./app.bin < in.txt`,
   },
   C: {
     image: "gcc:latest",
-    command: (code, input) =>
-      `cd /tmp && echo "${b64Encode(code)}" | base64 -d > main.c && echo "${b64Encode(input)}" | base64 -d > in.txt && gcc main.c -o main 2> build_error.txt; if [ -f main ]; then ./main < in.txt; else cat build_error.txt >&2; exit 1; fi`,
+    compile: (code) =>
+      `mkdir -p /sandbox && cd /sandbox && printf "%s" "${b64Encode(code)}" | base64 -d > main.c && gcc main.c -o app.bin > build.log 2>&1 || (cat build.log >&2 && exit 1)`,
+    run: (input) =>
+      `cd /sandbox && printf "%s" "${b64Encode(input)}" | base64 -d > in.txt && timeout 5s ./app.bin < in.txt`,
   },
   JAVA: {
     image: "openjdk:17",
-    command: (code, input) =>
-      `cd /tmp && echo "${b64Encode(code)}" | base64 -d > Main.java && echo "${b64Encode(input)}" | base64 -d > in.txt && javac Main.java 2> build_error.txt; if [ $? -eq 0 ]; then java Main < in.txt; else cat build_error.txt >&2; exit 1; fi`,
+    compile: (code) =>
+      `mkdir -p /sandbox && cd /sandbox && printf "%s" "${b64Encode(code)}" | base64 -d > Main.java && javac Main.java > build.log 2>&1 || (cat build.log >&2 && exit 1)`,
+    run: (input) =>
+      `cd /sandbox && printf "%s" "${b64Encode(input)}" | base64 -d > in.txt && timeout 5s java Main < in.txt`,
   },
   PYTHON: {
     image: "python:3.11-slim",
-    command: (code, input) =>
-      `cd /tmp && echo "${b64Encode(code)}" | base64 -d > main.py && echo "${b64Encode(input)}" | base64 -d > in.txt && python3 main.py < in.txt`,
+    compile: (code) =>
+      `mkdir -p /sandbox && cd /sandbox && printf "%s" "${b64Encode(code)}" | base64 -d > main.py`,
+    run: (input) =>
+      `cd /sandbox && printf "%s" "${b64Encode(input)}" | base64 -d > in.txt && timeout 5s python3 main.py < in.txt`,
   },
   JAVASCRIPT: {
     image: "node:20-alpine",
-    command: (code, input) =>
-      `cd /tmp && echo "${b64Encode(code)}" | base64 -d > main.js && echo "${b64Encode(input)}" | base64 -d > in.txt && node main.js < in.txt`,
+    compile: (code) =>
+      `mkdir -p /sandbox && cd /sandbox && printf "%s" "${b64Encode(code)}" | base64 -d > main.js`,
+    run: (input) =>
+      `cd /sandbox && printf "%s" "${b64Encode(input)}" | base64 -d > in.txt && timeout 5s node main.js < in.txt`,
   },
   TYPESCRIPT: {
     image: "node:20-alpine",
-    command: (code, input) =>
-      `cd /tmp && echo "${b64Encode(code)}" | base64 -d > main.ts && echo "${b64Encode(input)}" | base64 -d > in.txt && npx --yes tsx main.ts < in.txt`,
+    compile: (code) =>
+      `mkdir -p /sandbox && cd /sandbox && printf "%s" "${b64Encode(code)}" | base64 -d > main.ts`,
+    run: (input) =>
+      `cd /sandbox && printf "%s" "${b64Encode(input)}" | base64 -d > in.txt && timeout 5s npx --yes tsx main.ts < in.txt`,
   },
 };
 
-const watchJobAndGetLogs = async (namespace, jobName) => {
-  const maxRetries = 20;
-  const delay = 500;
+export class ExecutionSandbox {
+  constructor(runId, language) {
+    this.runId = runId.toLowerCase();
+    this.podName = `sandbox-${this.runId}`;
+    this.namespace = "default";
+    this.config = LANGUAGE_CONFIG[language];
+    this.language = language;
+  }
 
-  for (let i = 0; i < maxRetries; i++) {
-    await new Promise((resolve) => setTimeout(resolve, delay));
+  async init() {
+    if (!this.config) throw new Error(`Unsupported Language: ${this.language}`);
 
-    const res = await k8sBatchApi.readNamespacedJobStatus({
-      name: jobName,
-      namespace: namespace,
-    });
-    const jobData = res.body || res;
-    const status = jobData.status;
+    const podManifest = {
+      apiVersion: "v1",
+      kind: "Pod",
+      metadata: { name: this.podName, namespace: this.namespace },
+      spec: {
+        containers: [
+          {
+            name: "evaluator",
+            image: this.config.image,
+            command: ["sleep", "3600"],
+            resources: {
+              limits: { memory: "1Gi", cpu: "1000m" },
+            },
+          },
+        ],
+        restartPolicy: "Never",
+      },
+    };
 
-    if (status && (status.succeeded || status.failed)) {
-      const podRes = await k8sCoreApi.listNamespacedPod({
-        namespace: namespace,
-        labelSelector: `job-name=${jobName}`,
+    try {
+      await k8sCoreApi.createNamespacedPod({
+        namespace: this.namespace,
+        body: podManifest,
+      });
+    } catch (err) {
+      throw new Error(
+        `Pod Creation Failed: ${err.message || err.type || "Unknown Error"}`,
+      );
+    }
+
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+
+      try {
+        const res = await k8sCoreApi.readNamespacedPodStatus({
+          name: this.podName,
+          namespace: this.namespace,
+        });
+
+        const podData = res.body || res;
+        const status = podData.status || {};
+        const phase = status.phase;
+
+        const containerStatuses = status.containerStatuses || [];
+        const isReady =
+          containerStatuses.length > 0 && containerStatuses[0].ready === true;
+
+        if (phase === "Running" && isReady) {
+          await new Promise((r) => setTimeout(r, 500));
+          return true;
+        }
+        if (phase === "Failed" || phase === "Unknown") {
+          throw new Error(`Pod failed to start. Status: ${phase}`);
+        }
+      } catch (error) {
+        if (error.statusCode !== 404) {
+          console.error(`[Pod Status Polling]`, error.message || error.type);
+        }
+      }
+    }
+    throw new Error("Sandbox creation timed out.");
+  }
+
+  async execCommand(commandStr) {
+    return new Promise((resolve) => {
+      let outputData = "";
+      const outStream = new stream.PassThrough();
+
+      outStream.on("data", (chunk) => {
+        outputData += chunk.toString();
       });
 
-      const podData = podRes.body || podRes;
-
-      if (!podData.items || podData.items.length === 0) {
-        throw new Error("Execution Pod not found.");
-      }
-
-      const podName = podData.items[0].metadata.name;
-      let logText = "";
       try {
-        const logRes = await k8sCoreApi.readNamespacedPodLog({
-          name: podName,
-          namespace: namespace,
+        const req = exec.exec(
+          this.namespace,
+          this.podName,
+          "evaluator",
+          ["sh", "-c", commandStr],
+          outStream,
+          outStream,
+          null,
+          false,
+          (status) => {
+            setTimeout(() => {
+              const output = outputData.trim();
+              if (status && status.status === "Failure") {
+                const errorReason = output.includes("Terminated")
+                  ? "Time Limit Exceeded"
+                  : output;
+                resolve({
+                  success: false,
+                  output: errorReason || "Execution Failed",
+                });
+              } else {
+                resolve({ success: true, output: output });
+              }
+            }, 100);
+          },
+        );
+        if (req && req.catch) {
+          req.catch((err) => {
+            resolve({
+              success: false,
+              output: `K8s WebSocket Dropped: ${err.message || err.type}`,
+            });
+          });
+        }
+      } catch (err) {
+        resolve({
+          success: false,
+          output: `K8s Exec Crash: ${err.message || err.type}`,
         });
-        logText = logRes.body !== undefined ? logRes.body : logRes;
-      } catch (logErr) {
-        console.error(`[Log Fetch Error] ${jobName}:`, logErr.message);
       }
+    });
+  }
 
-      if (status.failed) {
-        throw new Error(
-          `Execution failed (compile/runtime error or OOM/timeout). Container output: ${
-            typeof logText === "string" ? logText : "(no logs captured)"
-          }`,
+  async cleanup() {
+    try {
+      await k8sCoreApi.deleteNamespacedPod({
+        name: this.podName,
+        namespace: this.namespace,
+        body: { propagationPolicy: "Background" },
+      });
+    } catch (err) {
+      if (err.statusCode !== 404) {
+        console.error(
+          `[Cleanup Error] ${this.podName}:`,
+          err.message || err.type || "Deletion failed",
         );
       }
-
-      return typeof logText === "string" ? logText.trim() : "";
     }
   }
-  throw new Error("Job tracking timed out.");
-};
-
-export const executeInK8s = async (code, language, input, runId) => {
-  const namespace = "default";
-  const jobName = `job-${runId.toLowerCase()}`;
-
-  const config = LANGUAGE_CONFIG[language];
-
-  if (!config) {
-    throw new Error(`Unsupported LanguageType: ${language}`);
-  }
-
-  const dockerImage = config.image;
-  const compileAndRunCmd = config.command(code, input);
-
-  const jobManifest = {
-    apiVersion: "batch/v1",
-    kind: "Job",
-    metadata: { name: jobName, namespace },
-    spec: {
-      activeDeadlineSeconds: 120,
-      backoffLimit: 0,
-      template: {
-        spec: {
-          containers: [
-            {
-              name: "evaluator",
-              image: dockerImage,
-              command: ["sh", "-c", compileAndRunCmd],
-              resources: {
-                limits: {
-                  memory: "512Mi",
-                  cpu: "500m",
-                },
-              },
-            },
-          ],
-          restartPolicy: "Never",
-        },
-      },
-    },
-  };
-
-  try {
-    await k8sBatchApi.createNamespacedJob({
-      namespace: namespace,
-      body: jobManifest,
-    });
-    const output = await watchJobAndGetLogs(namespace, jobName);
-    return { success: true, output };
-  } catch (error) {
-    console.log(error);
-    console.error(`[K8s Sandbox Error]:`, error.body || error.message);
-    return {
-      success: false,
-      error: error.message || "Compilation or Runtime Error",
-    };
-  } finally {
-    // try {
-    //   await k8sBatchApi.deleteNamespacedJob({
-    //     name: jobName,
-    //     namespace: namespace,
-    //     body: {
-    //       propagationPolicy: "Background",
-    //     },
-    //   });
-    // } catch (cleanupError) {
-    //   console.error(
-    //     `Failed to clean up K8s job ${jobName}:`,
-    //     cleanupError.message,
-    //   );
-    // }
-  }
-};
+}

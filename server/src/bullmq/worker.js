@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import { connection as Conn } from "./producer.js";
-import { executeInK8s } from "../utils/jobgenerate.util.js";
+import { ExecutionSandbox } from "../utils/jobgenerate.util.js";
 import prisma from "../config/db.config.js";
 import redis from "../config/redis.config.js";
 
@@ -13,47 +13,52 @@ export const runWorker = new Worker(
   "run_queue",
   async (job) => {
     const { runId, questionId, code, language, customInput } = job.data;
-    console.log(`[Run Worker] Processing custom run execution: ${runId}`);
-    try {
-      let inputToTest = customInput;
-      let expectedOutput = null;
+    console.log(`\n================================================`);
+    console.log(`[Run Worker] Starting Custom Run: ${runId}`);
 
-      if (!inputToTest) {
-        const publicTestCase = await prisma.testcase.findFirst({
+    const sandbox = new ExecutionSandbox(runId, language);
+
+    try {
+      let testcasesToRun = [];
+      if (customInput && customInput.trim() !== "") {
+        console.log(`[Run Worker] User provided custom input.`);
+        testcasesToRun.push({
+          id: "custom",
+          input: customInput,
+          expectedOutput: null,
+        });
+      } else {
+        console.log(`[Run Worker] Fetching all public example testcases...`);
+        const publicTestcases = await prisma.testcase.findMany({
           where: { questionId, isHidden: false },
+          orderBy: { id: "asc" },
         });
 
-        if (!publicTestCase) {
+        if (publicTestcases.length === 0) {
+          console.log(
+            `[Run Worker] ❌ Aborted: No public testcases available.`,
+          );
           await redis.set(
             `run:${runId}`,
             JSON.stringify({
               status: "ERROR",
-              error: "No public testcase available.",
+              error: "No public testcases available.",
             }),
             "EX",
             300,
           );
           return;
         }
-        inputToTest = publicTestCase.input;
-        expectedOutput = publicTestCase.expectedOutput;
+        testcasesToRun = publicTestcases;
       }
 
       const driver = await prisma.codestub.findUnique({
-        where: {
-          questionId_language: {
-            questionId,
-            language,
-          },
-        },
-        select: {
-          driverCode: true,
-        },
+        where: { questionId_language: { questionId, language } },
+        select: { driverCode: true },
       });
 
-      if (!driver || !driver.driverCode) {
+      if (!driver || !driver.driverCode)
         throw new Error(`Driver code not found for language: ${language}`);
-      }
 
       const codeRun = driver.driverCode.replace("{{USER_CODE}}", code);
       await redis.set(
@@ -63,26 +68,76 @@ export const runWorker = new Worker(
         300,
       );
 
-      const result = await executeInK8s(codeRun, language, inputToTest, runId);
+      console.log(`[Run Worker] Provisioning Sandbox environment...`);
+      await sandbox.init();
 
-      const normalizedActual = normalizeOutput(result.output);
-      const normalizedExpected = normalizeOutput(expectedOutput || "");
+      console.log(`[Run Worker] Compiling code...`);
+      const compileCmd = sandbox.config.compile(codeRun);
+      const compileRes = await sandbox.execCommand(compileCmd);
+
+      if (!compileRes.success) {
+        console.log(`[Run Worker] ❌ Compilation Error:\n${compileRes.output}`);
+        await redis.set(
+          `run:${runId}`,
+          JSON.stringify({
+            status: "COMPILATION_ERROR",
+            error: compileRes.output,
+          }),
+          "EX",
+          300,
+        );
+        return;
+      }
+
+      console.log(
+        `[Run Worker] Executing ${testcasesToRun.length} testcase(s)...`,
+      );
+      const resultsArray = [];
+      let overallPassed = true;
+
+      for (let idx = 0; idx < testcasesToRun.length; idx++) {
+        const tc = testcasesToRun[idx];
+        const runCmd = sandbox.config.run(tc.input);
+        const result = await sandbox.execCommand(runCmd);
+
+        const normalizedActual = normalizeOutput(result.output);
+        const normalizedExpected = normalizeOutput(tc.expectedOutput || "");
+
+        let passed = false;
+        if (!result.success) {
+          passed = false;
+        } else if (tc.expectedOutput === null) {
+          passed = true;
+        } else {
+          passed = normalizedActual === normalizedExpected;
+        }
+
+        if (!passed) overallPassed = false;
+
+        resultsArray.push({
+          testcaseIndex: idx + 1,
+          input: tc.input,
+          expectedOutput: tc.expectedOutput,
+          actualOutput: normalizedActual,
+          passed: passed,
+          error: result.success ? null : result.output,
+        });
+
+        if (passed) {
+          console.log(
+            `   └─ [TC ${idx + 1}] ✅ Passed.\nInput: ${tc.input}\nExpected Output: ${normalizedExpected}\nYour Output: ${normalizedActual}`,
+          );
+        } else {
+          console.log(
+            `   └─ [TC ${idx + 1}] ❌ Failed.\nInput: ${tc.input}\nExpected Output: ${normalizedExpected}\nYour Output: ${normalizedActual}`,
+          );
+        }
+      }
 
       const finalVerdict = {
-        status: result.success ? "SUCCESS" : "ERROR",
-        output: result.output || null,
-        error: result.error || null,
-        expectedOutput: expectedOutput,
-        passed:
-          result.success &&
-          (expectedOutput === null || normalizedActual === normalizedExpected),
+        status: overallPassed ? "SUCCESS" : "ERROR",
+        results: resultsArray,
       };
-
-      if (!finalVerdict.passed && result.success) {
-        console.log(
-          `[Mismatch] Expected: "${normalizedExpected}", Actual: "${normalizedActual}"`,
-        );
-      }
 
       await redis.set(`run:${runId}`, JSON.stringify(finalVerdict), "EX", 300);
     } catch (error) {
@@ -96,19 +151,22 @@ export const runWorker = new Worker(
         "EX",
         300,
       );
+    } finally {
+      console.log(`[Run Worker] Cleaning up Sandbox...`);
+      await sandbox.cleanup();
     }
   },
-  {
-    connection: Conn,
-    concurrency: 10,
-  },
+  { connection: Conn, concurrency: 10 },
 );
 
 export const submissionWorker = new Worker(
   "submission_queue",
   async (job) => {
     const { submissionId, questionId, code, language } = job.data;
-    console.log(`[Submission Worker] Grading official entry: ${submissionId}`);
+    console.log(`\n================================================`);
+    console.log(`[Submission Worker] Grading Official Entry: ${submissionId}`);
+
+    const sandbox = new ExecutionSandbox(submissionId, language);
 
     try {
       await prisma.submission.update({
@@ -117,26 +175,45 @@ export const submissionWorker = new Worker(
       });
 
       const driver = await prisma.codestub.findUnique({
-        where: {
-          questionId_language: {
-            questionId,
-            language,
-          },
-        },
-        select: {
-          driverCode: true,
-        },
+        where: { questionId_language: { questionId, language } },
+        select: { driverCode: true },
       });
 
-      if (!driver || !driver.driverCode) {
+      if (!driver || !driver.driverCode)
         throw new Error(`Driver code not found for language: ${language}`);
-      }
 
       const codeRun = driver.driverCode.replace("{{USER_CODE}}", code);
-
       const testcases = await prisma.testcase.findMany({
         where: { questionId },
+        orderBy: { id: "asc" },
       });
+
+      console.log(`[Submission Worker] Provisioning Sandbox environment...`);
+      await sandbox.init();
+
+      console.log(`[Submission Worker] Compiling code...`);
+      const compileCmd = sandbox.config.compile(codeRun);
+      const compileRes = await sandbox.execCommand(compileCmd);
+
+      if (!compileRes.success) {
+        console.log(
+          `[Submission Worker] ❌ Compilation Error:\n${compileRes.output}`,
+        );
+        await prisma.submission.update({
+          where: { id: submissionId },
+          data: {
+            result: "COMPILATION_ERROR",
+            errorLog: compileRes.output,
+            testcasesPassed: 0,
+            totalTestcases: testcases.length,
+          },
+        });
+        return;
+      }
+
+      console.log(
+        `[Submission Worker] Compiled successfully. Executing ${testcases.length} test cases...`,
+      );
 
       let passedCount = 0;
       let finalVerdict = "SUCCESS";
@@ -144,34 +221,46 @@ export const submissionWorker = new Worker(
 
       for (let idx = 0; idx < testcases.length; idx++) {
         const tc = testcases[idx];
+        const runCmd = sandbox.config.run(tc.input);
+        const runRes = await sandbox.execCommand(runCmd);
+        const normalizedActual = normalizeOutput(runRes.output);
+        const normalizedExpected = normalizeOutput(tc.expectedOutput || "");
 
-        const executionId = `${submissionId}-tc-${idx}`;
-        const result = await executeInK8s(
-          codeRun,
-          language,
-          tc.input,
-          executionId,
-        );
+        const buildErrorPayload = (errorMessage) => {
+          return JSON.stringify({
+            failedOnIndex: idx + 1,
+            input: tc.input,
+            expectedOutput: tc.expectedOutput,
+            actualOutput: normalizedActual,
+            error: errorMessage,
+          });
+        };
 
-        if (!result.success) {
-          finalVerdict = result.error.includes("Timeout")
+        if (!runRes.success) {
+          finalVerdict = runRes.output.includes("Time Limit")
             ? "TIME_LIMIT_EXCEEDED"
             : "RUNTIME_ERROR";
-          errorLog = result.error;
+          errorLog = buildErrorPayload(runRes.output);
+          console.log(`   └─ [TC ${idx + 1}] ❌ Failed: ${finalVerdict}`);
           break;
         }
-
-        const normalizedActual = normalizeOutput(result.output);
-        const normalizedExpected = normalizeOutput(tc.expectedOutput || "");
 
         if (normalizedActual !== normalizedExpected) {
           finalVerdict = "WRONG";
-          errorLog = `Failed on testcase ${idx + 1}. Expected: ${normalizedExpected}, Actual: ${normalizedActual}`;
+          errorLog = buildErrorPayload("Mismatch");
+          console.log(
+            `   └─ [TC ${idx + 1}] ❌ Failed: Mismatch. \nInput: ${tc.input}\nExpected Output: ${normalizedExpected}\nYour Output: ${normalizedActual}`,
+          );
           break;
         }
 
+        console.log(`   └─ [TC ${idx + 1}] ✅ Passed.`);
         passedCount++;
       }
+
+      console.log(
+        `[Submission Worker] Final Verdict: ${finalVerdict} (${passedCount}/${testcases.length})`,
+      );
 
       await prisma.submission.update({
         where: { id: submissionId },
@@ -183,7 +272,7 @@ export const submissionWorker = new Worker(
         },
       });
     } catch (error) {
-      console.log(`[Submission Worker Fail]:`, error);
+      console.error(`[Submission Worker Fail]:`, error);
       await prisma.submission.update({
         where: { id: submissionId },
         data: {
@@ -191,10 +280,10 @@ export const submissionWorker = new Worker(
           errorLog: "Judge engine processing failure.",
         },
       });
+    } finally {
+      console.log(`[Submission Worker] Cleaning up Sandbox...`);
+      await sandbox.cleanup();
     }
   },
-  {
-    connection: Conn,
-    concurrency: 10,
-  },
+  { connection: Conn, concurrency: 10 },
 );
