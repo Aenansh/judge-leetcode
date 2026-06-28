@@ -15,6 +15,7 @@
   "dependencies": {
     "@kubernetes/client-node": "^1.4.0",
     "@prisma/adapter-neon": "^7.8.0",
+    "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "bcrypt": "^6.0.0",
     "bullmq": "^5.79.1",
@@ -25,6 +26,7 @@
     "ioredis": "^5.11.1",
     "jsonwebtoken": "^9.0.3",
     "nodemon": "^3.1.14",
+    "pg": "^8.22.0",
     "slug": "^11.0.1"
   },
   "devDependencies": {

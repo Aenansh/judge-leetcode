@@ -1,12 +1,22 @@
 import * as k8s from "@kubernetes/client-node";
 
 const kc = new k8s.KubeConfig();
-kc.loadFromDefault();
+try {
+  kc.loadFromDefault();
 
-const cluster = kc.getCurrentCluster();
-if (cluster) {
-  cluster.skipTLSVerify = true;
-} else {
+  const cluster = kc.getCurrentCluster();
+  if (cluster) {
+    cluster.skipTLSVerify = true;
+    if (
+      cluster.server.includes("127.0.0.1") ||
+      cluster.server.includes("localhost")
+    ) {
+      cluster.server = cluster.server
+        .replace("127.0.0.1", "host.docker.internal")
+        .replace("localhost", "host.docker.internal");
+    }
+  }
+} catch (error) {
   kc.loadFromOptions({
     clusters: [
       {
@@ -30,32 +40,32 @@ const LANGUAGE_CONFIG = {
   CPP: {
     image: "gcc:latest",
     command: (code, input) =>
-      `cd /tmp && echo "${b64Encode(code)}" | base64 -d > main.cpp && echo "${b64Encode(input)}" | base64 -d > in.txt && g++ main.cpp -o main 2> build_error.txt && if [ -f main ]; then ./main < in.txt; else cat build_error.txt; fi`,
+      `cd /tmp && echo "${b64Encode(code)}" | base64 -d > main.cpp && echo "${b64Encode(input)}" | base64 -d > in.txt && g++ main.cpp -o main 2> build_error.txt; if [ -f main ]; then ./main < in.txt; else cat build_error.txt >&2; exit 1; fi`,
   },
   C: {
     image: "gcc:latest",
     command: (code, input) =>
-      `echo "${b64Encode(code)}" | base64 -d > main.c && echo "${b64Encode(input)}" | base64 -d > in.txt && gcc main.c -o main && ./main < in.txt`,
+      `cd /tmp && echo "${b64Encode(code)}" | base64 -d > main.c && echo "${b64Encode(input)}" | base64 -d > in.txt && gcc main.c -o main 2> build_error.txt; if [ -f main ]; then ./main < in.txt; else cat build_error.txt >&2; exit 1; fi`,
   },
   JAVA: {
     image: "openjdk:17",
     command: (code, input) =>
-      `echo "${b64Encode(code)}" | base64 -d > Main.java && echo "${b64Encode(input)}" | base64 -d > in.txt && javac Main.java && java Main < in.txt`,
+      `cd /tmp && echo "${b64Encode(code)}" | base64 -d > Main.java && echo "${b64Encode(input)}" | base64 -d > in.txt && javac Main.java 2> build_error.txt; if [ $? -eq 0 ]; then java Main < in.txt; else cat build_error.txt >&2; exit 1; fi`,
   },
   PYTHON: {
     image: "python:3.11-slim",
     command: (code, input) =>
-      `echo "${b64Encode(code)}" | base64 -d > main.py && echo "${b64Encode(input)}" | base64 -d > in.txt && python3 main.py < in.txt`,
+      `cd /tmp && echo "${b64Encode(code)}" | base64 -d > main.py && echo "${b64Encode(input)}" | base64 -d > in.txt && python3 main.py < in.txt`,
   },
   JAVASCRIPT: {
     image: "node:20-alpine",
     command: (code, input) =>
-      `echo "${b64Encode(code)}" | base64 -d > main.js && echo "${b64Encode(input)}" | base64 -d > in.txt && node main.js < in.txt`,
+      `cd /tmp && echo "${b64Encode(code)}" | base64 -d > main.js && echo "${b64Encode(input)}" | base64 -d > in.txt && node main.js < in.txt`,
   },
   TYPESCRIPT: {
     image: "node:20-alpine",
     command: (code, input) =>
-      `echo "${b64Encode(code)}" | base64 -d > main.ts && echo "${b64Encode(input)}" | base64 -d > in.txt && npx tsx main.ts < in.txt`,
+      `cd /tmp && echo "${b64Encode(code)}" | base64 -d > main.ts && echo "${b64Encode(input)}" | base64 -d > in.txt && npx --yes tsx main.ts < in.txt`,
   },
 };
 
@@ -68,7 +78,7 @@ const watchJobAndGetLogs = async (namespace, jobName) => {
 
     const res = await k8sBatchApi.readNamespacedJobStatus({
       name: jobName,
-      namespace: namespace
+      namespace: namespace,
     });
     const jobData = res.body || res;
     const status = jobData.status;
@@ -86,16 +96,24 @@ const watchJobAndGetLogs = async (namespace, jobName) => {
       }
 
       const podName = podData.items[0].metadata.name;
+      let logText = "";
+      try {
+        const logRes = await k8sCoreApi.readNamespacedPodLog({
+          name: podName,
+          namespace: namespace,
+        });
+        logText = logRes.body !== undefined ? logRes.body : logRes;
+      } catch (logErr) {
+        console.error(`[Log Fetch Error] ${jobName}:`, logErr.message);
+      }
 
       if (status.failed) {
-        console.log(status);
-        throw new Error("Time Limit Exceeded or Execution Error.");
+        throw new Error(
+          `Execution failed (compile/runtime error or OOM/timeout). Container output: ${
+            typeof logText === "string" ? logText : "(no logs captured)"
+          }`,
+        );
       }
-      const logRes = await k8sCoreApi.readNamespacedPodLog({
-        name: podName,
-        namespace: namespace,
-      });
-      const logText = logRes.body !== undefined ? logRes.body : logRes;
 
       return typeof logText === "string" ? logText.trim() : "";
     }
@@ -104,7 +122,6 @@ const watchJobAndGetLogs = async (namespace, jobName) => {
 };
 
 export const executeInK8s = async (code, language, input, runId) => {
-  console.log(code);
   const namespace = "default";
   const jobName = `job-${runId.toLowerCase()}`;
 
@@ -153,6 +170,7 @@ export const executeInK8s = async (code, language, input, runId) => {
     const output = await watchJobAndGetLogs(namespace, jobName);
     return { success: true, output };
   } catch (error) {
+    console.log(error);
     console.error(`[K8s Sandbox Error]:`, error.body || error.message);
     return {
       success: false,

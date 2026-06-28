@@ -2,7 +2,12 @@ import { Worker } from "bullmq";
 import { connection as Conn } from "./producer.js";
 import { executeInK8s } from "../utils/jobgenerate.util.js";
 import prisma from "../config/db.config.js";
-import redis from "../config/redis.config.js"
+import redis from "../config/redis.config.js";
+
+const normalizeOutput = (output) => {
+  if (typeof output !== "string") return "";
+  return output.trim().replace(/\r\n/g, "\n");
+};
 
 export const runWorker = new Worker(
   "run_queue",
@@ -60,6 +65,9 @@ export const runWorker = new Worker(
 
       const result = await executeInK8s(codeRun, language, inputToTest, runId);
 
+      const normalizedActual = normalizeOutput(result.output);
+      const normalizedExpected = normalizeOutput(expectedOutput || "");
+
       const finalVerdict = {
         status: result.success ? "SUCCESS" : "ERROR",
         output: result.output || null,
@@ -67,8 +75,14 @@ export const runWorker = new Worker(
         expectedOutput: expectedOutput,
         passed:
           result.success &&
-          (expectedOutput === null || result.output === expectedOutput),
+          (expectedOutput === null || normalizedActual === normalizedExpected),
       };
+
+      if (!finalVerdict.passed && result.success) {
+        console.log(
+          `[Mismatch] Expected: "${normalizedExpected}", Actual: "${normalizedActual}"`,
+        );
+      }
 
       await redis.set(`run:${runId}`, JSON.stringify(finalVerdict), "EX", 300);
     } catch (error) {
@@ -147,9 +161,12 @@ export const submissionWorker = new Worker(
           break;
         }
 
-        if (result.output !== tc.expectedOutput) {
+        const normalizedActual = normalizeOutput(result.output);
+        const normalizedExpected = normalizeOutput(tc.expectedOutput || "");
+
+        if (normalizedActual !== normalizedExpected) {
           finalVerdict = "WRONG";
-          errorLog = `Failed on testcase ${idx + 1}.`;
+          errorLog = `Failed on testcase ${idx + 1}. Expected: ${normalizedExpected}, Actual: ${normalizedActual}`;
           break;
         }
 
@@ -166,7 +183,7 @@ export const submissionWorker = new Worker(
         },
       });
     } catch (error) {
-      console.error(`[Submission Worker Fail]:`, error);
+      console.log(`[Submission Worker Fail]:`, error);
       await prisma.submission.update({
         where: { id: submissionId },
         data: {

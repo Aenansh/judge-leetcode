@@ -1,5 +1,5 @@
 # Use the official lightweight Node.js 20 Alpine image
-FROM node:20-alpine
+FROM node:22-alpine
 
 WORKDIR /app
 COPY package*.json ./
