@@ -68,6 +68,7 @@ const fetchQuestions = async (req, res) => {
         select: {
           id: true,
           title: true,
+          slug: true,
           difficulty: true,
           number: true,
         },
@@ -95,9 +96,9 @@ const fetchQuestionById = async (req, res) => {
       return res.status(400).json({ error: "Question ID is required." });
     }
 
-    const question = await prisma.question.findUnique({
+    const question = await prisma.question.findFirst({
       where: {
-        id: questionId,
+        OR: [{ id: questionId }, { slug: questionId }],
       },
       include: {
         testcases: {

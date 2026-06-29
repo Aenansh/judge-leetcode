@@ -80,7 +80,7 @@ export const runWorker = new Worker(
         await redis.set(
           `run:${runId}`,
           JSON.stringify({
-            status: "COMPILATION_ERROR",
+            status: "COMPILE_ERROR",
             error: compileRes.output,
           }),
           "EX",
@@ -202,7 +202,7 @@ export const submissionWorker = new Worker(
         await prisma.submission.update({
           where: { id: submissionId },
           data: {
-            result: "COMPILATION_ERROR",
+            result: "COMPILE_ERROR",
             errorLog: compileRes.output,
             testcasesPassed: 0,
             totalTestcases: testcases.length,

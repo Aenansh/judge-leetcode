@@ -99,19 +99,28 @@ export class ExecutionSandbox {
     if (!this.config) throw new Error(`Unsupported Language: ${this.language}`);
 
     const TIMEOUT_THRESHOLDS = {
-      PYTHON: 5000,
-      JAVASCRIPT: 5000,
-      CPP: 7000,
+      PYTHON: 15000,
+      JAVASCRIPT: 15000,
+      CPP: 15000,
       JAVA: 15000,
       C: 15000,
-      TYPESCRIPT: 10000,
+      TYPESCRIPT: 15000,
     };
 
     const timeoutLimitMs = TIMEOUT_THRESHOLDS[this.language] || 15000;
     const maxIterations = Math.ceil(timeoutLimitMs / 500);
 
-    const memoryLimit = this.language === "JAVA" ? "512Mi" : "256Mi";
-    const cpuLimit = this.language === "JAVA" ? "1000m" : "500m";
+    let memoryLimit = "256Mi";
+    let cpuLimit = "500m";
+
+    if (
+      this.language === "JAVA" ||
+      this.language === "CPP" ||
+      this.language === "C"
+    ) {
+      memoryLimit = "512Mi";
+      cpuLimit = "1000m";
+    }
 
     const podManifest = {
       apiVersion: "v1",

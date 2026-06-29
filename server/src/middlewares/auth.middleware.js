@@ -5,7 +5,7 @@ const verifyToken = async (req, res, next) => {
   try {
     const token =
       req.cookies?.access_token ||
-      req.headers("Authorization")?.replace("Bearer ", "");
+      req.header("Authorization")?.replace("Bearer ", "");
 
     if (!token) {
       return res

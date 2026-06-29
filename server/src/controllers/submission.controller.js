@@ -168,7 +168,6 @@ const fetchSubmissionById = async (req, res) => {
     }
 
     delete submission.userId;
-
     return res.status(200).json(submission);
   } catch (error) {
     console.log("Error in fetching submission by ID.", error.message);
