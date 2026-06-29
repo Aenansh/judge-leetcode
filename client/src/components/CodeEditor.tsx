@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import Editor from "@monaco-editor/react";
 import { questionsApi } from "../api/questions";
 import type { QuestionDetail, SubmissionDetail } from "../api/questions";
+import { useWorkspaceStore } from "../store/workspaceStore";
 
 type CodeEditorProps = {
   question: QuestionDetail;
@@ -11,6 +12,9 @@ export default function CodeEditor({ question }: CodeEditorProps) {
   // Editor State
   const [language, setLanguage] = useState<string>("");
   const [code, setCode] = useState<string>("");
+
+  const setCachedCode = useWorkspaceStore((state) => state.setCode);
+  const getCachedCode = useWorkspaceStore((state) => state.getCode);
 
   // Console State
   const [customInput, setCustomInput] = useState<string>("");
@@ -26,10 +30,24 @@ export default function CodeEditor({ question }: CodeEditorProps) {
   // Initialize language and code stub
   useEffect(() => {
     if (question.codestubs.length > 0) {
-      setLanguage(question.codestubs[0].language);
-      setCode(question.codestubs[0].userSnippet);
+      const defaultLang = language || question.codestubs[0].language;
+      const defaultStub =
+        question.codestubs.find((s) => s.language === defaultLang)
+          ?.userSnippet || "";
+
+      const resolvedCode = getCachedCode(question.id, defaultLang, defaultStub);
+
+      setLanguage(defaultLang);
+      setCode(resolvedCode);
     }
-  }, [question]);
+  }, [question, language]);
+
+  const handleEditorChange = (value: string | undefined) => {
+    const updatedCode = value || "";
+    setCode(updatedCode);
+    // Silent mirror to localStorage via Zustand on every keystroke
+    setCachedCode(question.id, language, updatedCode);
+  };
 
   // ==========================================
   // BULLETPROOF RUN POLLING
@@ -203,7 +221,7 @@ export default function CodeEditor({ question }: CodeEditorProps) {
           language={language.toLowerCase()}
           theme="vs-dark"
           value={code}
-          onChange={(v) => setCode(v || "")}
+          onChange={handleEditorChange}
           options={{
             minimap: { enabled: false },
             fontSize: 14,
