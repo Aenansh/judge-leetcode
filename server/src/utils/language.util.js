@@ -1,6 +1,5 @@
 const b64Encode = (str) => Buffer.from(str).toString("base64");
 
-
 export const LANGUAGE_CONFIG = {
   CPP: {
     image: "gcc:latest",

@@ -38,7 +38,7 @@ export default function CodeEditor({ question }: CodeEditorProps) {
     let pollCount = 0;
     const interval = setInterval(async () => {
       pollCount++;
-      if (pollCount > 30) {
+      if (pollCount > 70) {
         // Timeout after 30 seconds
         setProcessType(null);
         clearInterval(interval);
@@ -110,7 +110,7 @@ export default function CodeEditor({ question }: CodeEditorProps) {
       let pollCount = 0;
       const interval = setInterval(async () => {
         pollCount++;
-        if (pollCount > 45) {
+        if (pollCount > 80) {
           // Timeout after 45 seconds for heavy submissions
           setProcessType(null);
           clearInterval(interval);
