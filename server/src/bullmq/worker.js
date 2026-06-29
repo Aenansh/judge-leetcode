@@ -166,7 +166,7 @@ export const submissionWorker = new Worker(
     console.log(`\n================================================`);
     console.log(`[Submission Worker] Grading Official Entry: ${submissionId}`);
 
-    const sandbox = new ExecutionSandbox(submissionId, language); 
+    const sandbox = new ExecutionSandbox(submissionId, language);
 
     try {
       await prisma.submission.update({
@@ -219,10 +219,33 @@ export const submissionWorker = new Worker(
       let finalVerdict = "SUCCESS";
       let errorLog = null;
 
+      let maxTimeMs = 0;
+      let maxMemoryMb = 0;
+      
       for (let idx = 0; idx < testcases.length; idx++) {
         const tc = testcases[idx];
         const runCmd = sandbox.config.run(tc.input);
         const runRes = await sandbox.execCommand(runCmd);
+
+        let rawOutput = runRes.output || "";
+        let timeMs = 0;
+        let memoryMb = 0;
+
+        if (rawOutput.includes("__METRICS__")) {
+          const parts = rawOutput.split("__METRICS__");
+          rawOutput = parts[0];
+
+          const metricsStr = parts[1]?.trim() || "";
+          const metricParts = metricsStr.split("__");
+
+          if (metricParts.length === 2) {
+            timeMs = Math.round(parseFloat(metricParts[0]) * 1000);
+            memoryMb = parseFloat((parseInt(metricParts[1]) / 1024).toFixed(2));
+
+            if (timeMs > maxTimeMs) maxTimeMs = timeMs;
+            if (memoryMb > maxMemoryMb) maxMemoryMb = memoryMb;
+          }
+        }
         const normalizedActual = normalizeOutput(runRes.output);
         const normalizedExpected = normalizeOutput(tc.expectedOutput || "");
 
@@ -269,6 +292,8 @@ export const submissionWorker = new Worker(
           testcasesPassed: passedCount,
           totalTestcases: testcases.length,
           errorLog: errorLog,
+          timeTaken: maxTimeMs,
+          memoryUsed: maxMemoryMb,
         },
       });
     } catch (error) {

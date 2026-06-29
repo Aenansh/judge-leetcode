@@ -133,7 +133,7 @@ const fetchSubmissionById = async (req, res) => {
     const userId = req.user.id;
 
     if (typeof submissionId !== "string" || !submissionId.trim()) {
-      return res.status(400).json({ error: "No user ID provided." });
+      return res.status(400).json({ error: "No submission ID provided." });
     }
 
     const submission = await prisma.submission.findUnique({

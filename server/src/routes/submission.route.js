@@ -11,7 +11,7 @@ const router = Router();
 router.use(verifyToken);
 
 router.route("/").get(fetchUserSubmission);
-router.route("/:questionId").get(fetchQuestionSubmission);
+router.route("/question/:questionId").get(fetchQuestionSubmission);
 router.route("/:submissionId").get(fetchSubmissionById);
 
 export default router;
