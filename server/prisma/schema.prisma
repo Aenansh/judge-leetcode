@@ -47,8 +47,29 @@ model Question {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  hasChecker  Boolean         @default(false)
+  checkerCode CustomChecker[]
+  judgeType   JudgeType       @default(EXACT_MATCH)
+
   @@index([difficulty])
   @@index([category])
+}
+
+model CustomChecker {
+  id String @id @default(cuid())
+
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onUpdate: Cascade)
+
+  language LanguageType @default(JAVASCRIPT)
+
+  scriptSource String @db.Text
+
+  timeoutMs Int      @default(2000)
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+
+  @@unique([questionId, version])
 }
 
 model Submission {
@@ -153,4 +174,11 @@ enum CategoryType {
   DEPTH_FIRST_SEARCH
   BREADTH_FIRST_SEARCH
   BACKTRACKING
+  TOPOLOGICAL_SORT
+}
+
+enum JudgeType {
+  EXACT_MATCH
+  UNORDERED_MATCH
+  SPECIAL_JUDGE
 }

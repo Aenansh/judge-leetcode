@@ -96,6 +96,11 @@ export const runWorker = new Worker(
       const resultsArray = [];
       let overallPassed = true;
 
+      const question = await prisma.question.findUnique({
+        where: { id: questionId },
+        select: { hasChecker: true, checkerCode: true },
+      });
+
       for (let idx = 0; idx < testcasesToRun.length; idx++) {
         const tc = testcasesToRun[idx];
         const runCmd = sandbox.config.run(tc.input);
@@ -105,10 +110,30 @@ export const runWorker = new Worker(
         const normalizedExpected = normalizeOutput(tc.expectedOutput || "");
 
         let passed = false;
+
         if (!result.success) {
           passed = false;
         } else if (tc.expectedOutput === null) {
           passed = true;
+        } else if (question?.hasChecker && question?.checkerCode) {
+          console.log(`[Run Worker] Using Custom Checker for TC ${idx + 1}`);
+          try {
+            const checkerFn = new Function(
+              "input",
+              "actualOutput",
+              "expectedOutput",
+              `return (${question.checkerCode})(input, actualOutput, expectedOutput);`,
+            );
+            passed = Boolean(
+              checkerFn(tc.input, result.output, tc.expectedOutput),
+            );
+          } catch (checkerErr) {
+            console.error(
+              `[Run Worker] Checker execution error on TC ${idx + 1}:`,
+              checkerErr,
+            );
+            passed = false;
+          }
         } else {
           passed = normalizedActual === normalizedExpected;
         }
@@ -180,6 +205,11 @@ export const submissionWorker = new Worker(
         select: { driverCode: true },
       });
 
+      const question = await prisma.question.findUnique({
+        where: { id: questionId },
+        select: { hasChecker: true, checkerCode: true },
+      });
+
       if (!driver || !driver.driverCode)
         throw new Error(`Driver code not found for language: ${language}`);
 
@@ -222,7 +252,7 @@ export const submissionWorker = new Worker(
 
       let maxTimeMs = 0;
       let maxMemoryMb = 0;
-      
+
       for (let idx = 0; idx < testcases.length; idx++) {
         const tc = testcases[idx];
         const runCmd = sandbox.config.run(tc.input);
@@ -265,11 +295,36 @@ export const submissionWorker = new Worker(
           break;
         }
 
-        if (normalizedActual !== normalizedExpected) {
+        let isCorrect = false;
+
+        if (question?.hasCustomChecker && question?.checkerCode) {
+          try {
+            const checkerFn = new Function(
+              "input",
+              "actualOutput",
+              "expectedOutput",
+              `return (${question.checkerCode})(input, actualOutput, expectedOutput);`,
+            );
+
+            isCorrect = Boolean(
+              checkerFn(tc.input, runRes.output, tc.expectedOutput),
+            );
+          } catch (checkerErr) {
+            console.error(
+              `[Submission Worker] Custom Checker Error on TC ${idx + 1}:`,
+              checkerErr,
+            );
+            isCorrect = false;
+          }
+        } else {
+          isCorrect = normalizedActual === normalizedExpected;
+        }
+
+        if (!isCorrect) {
           finalVerdict = "WRONG";
-          errorLog = buildErrorPayload("Mismatch");
+          errorLog = buildErrorPayload("Mismatch or Invalid Output Logic");
           console.log(
-            `   └─ [TC ${idx + 1}] ❌ Failed: Mismatch. \nInput: ${tc.input}\nExpected Output: ${normalizedExpected}\nYour Output: ${normalizedActual}`,
+            `   └─ [TC ${idx + 1}] ❌ Failed: Output validation failed. \nInput: ${tc.input}\nExpected Output: ${normalizedExpected}\nYour Output: ${normalizedActual}`,
           );
           break;
         }
