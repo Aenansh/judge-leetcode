@@ -1,21 +1,24 @@
 # Judge LeetCode
 
-A Node.js backend for a LeetCode-style online judge. The service exposes APIs for users, questions, test cases, code stubs, code runs, and official submissions. Submissions are queued with BullMQ, stored with Prisma/Postgres, and executed inside temporary Kubernetes pods.
+A Node.js backend for a LeetCode-style online judge. The service exposes APIs for users, questions, test cases, code stubs, custom checkers, run requests, and official submissions. Submissions are queued with BullMQ, stored with Prisma/Postgres, and executed inside temporary Kubernetes pods.
 
 ## Features
 
-- User registration and login with JWT cookies
-- Question creation, listing, filtering, and detail APIs
+- User registration, login, profile, and logout with JWT cookies
+- Question creation, listing, filtering, and detail endpoints
 - Public and hidden test case management
-- Per-language code stubs and driver code
+- Per-language code stubs and driver code support
 - Authenticated code runs against public or custom input
 - Authenticated official submissions against all test cases
+- Custom special-judge checker support
 - Redis-backed queues for asynchronous judge work
 - Kubernetes sandbox pods for C, C++, Java, Python, JavaScript, and TypeScript execution
+- Submission rate limiting via Redis cooldowns
 
 ## Tech Stack
 
-- Node.js, Express 5
+- Node.js 22+
+- Express 5
 - Prisma 7
 - PostgreSQL / Neon
 - Redis and BullMQ
@@ -26,20 +29,21 @@ A Node.js backend for a LeetCode-style online judge. The service exposes APIs fo
 
 ```text
 .
-`-- server
-    |-- prisma
+|-- client/
+|-- server/
+    |-- prisma/
     |   `-- schema.prisma
-    |-- src
-    |   |-- bullmq
+    |-- src/
+    |   |-- bullmq/
     |   |   |-- producer.js
     |   |   `-- worker.js
-    |   |-- config
-    |   |-- controllers
-    |   |-- middlewares
-    |   |-- routes
-    |   |-- utils
+    |   |-- config/
+    |   |-- controllers/
+    |   |-- middlewares/
+    |   |-- routes/
+    |   |-- utils/
     |   |-- app.js
-    |   `-- index.js
+    |   |-- index.js
     |-- docker-compose.yml
     |-- Dockerfile
     |-- package.json
@@ -50,7 +54,7 @@ A Node.js backend for a LeetCode-style online judge. The service exposes APIs fo
 
 - Node.js 22 or newer
 - npm
-- PostgreSQL database, or a Neon database
+- PostgreSQL database, or a Neon-compatible Postgres database
 - Redis
 - Kubernetes cluster available from your local kubeconfig for judge execution
 - Docker, if you want to run Redis and the worker with Docker Compose
@@ -67,13 +71,15 @@ REDIS_URL="redis://localhost:6379"
 REDIS_HOST="localhost"
 REDIS_PORT=6379
 ACCESS_TOKEN_SECRET="replace-with-a-long-random-secret"
+CLIENT_URL="http://localhost:5173"
 ```
 
 Notes:
 
 - `DATABASE_URL` is used by the running API and worker.
 - `DIRECT_URL` is used by Prisma CLI through `server/prisma.config.ts`.
-- Use `REDIS_URL` for the simplest Redis setup. `REDIS_HOST` and `REDIS_PORT` are fallback values used by the BullMQ producer.
+- `REDIS_URL` is preferred for Redis connections. `REDIS_HOST` and `REDIS_PORT` are fallback values used by the BullMQ producer.
+- `CLIENT_URL` is used to configure allowed CORS origins.
 
 ## Setup
 
@@ -134,6 +140,8 @@ http://localhost:5000/api/v1
 ```http
 POST /users/register
 POST /users/login
+POST /users/logout
+GET /users/me
 ```
 
 Register body:
@@ -172,7 +180,9 @@ Create question body:
   "title": "Two Sum",
   "description": "Return indices of two numbers that add up to target.",
   "difficulty": "EASY",
-  "category": ["ARRAY", "HASH_TABLE"]
+  "category": ["ARRAY", "HASH_TABLE"],
+  "hasChecker": false,
+  "judgeType": "STANDARD"
 }
 ```
 
@@ -184,6 +194,8 @@ category=ARRAY
 limit=10
 page=1
 ```
+
+The question detail endpoint accepts either a question `id` or a `slug`.
 
 ### Test Cases
 
@@ -228,6 +240,24 @@ Create or update a code stub body:
 
 The worker replaces `{{USER_CODE}}` in `driverCode` with the submitted code before execution.
 
+### Custom Checkers
+
+```http
+POST /questions/:questionId/custom-checker
+GET /questions/:questionId/custom-checker
+GET /questions/:questionId/custom-checker/latest
+```
+
+Create a custom checker body:
+
+```json
+{
+  "scriptSource": "function check(input, userOutput, referenceOutput) { return userOutput === referenceOutput; }",
+  "language": "JAVASCRIPT",
+  "timeoutMs": 2000
+}
+```
+
 ### Runs and Submissions
 
 These routes require the `access_token` cookie set by login or registration.
@@ -236,8 +266,9 @@ These routes require the `access_token` cookie set by login or registration.
 POST /questions/:questionId/run
 POST /questions/:questionId/submissions
 GET /submissions
-GET /submissions/:questionId
+GET /submissions/question/:questionId
 GET /submissions/:submissionId
+GET /run/:runId
 ```
 
 Run code body:
@@ -258,6 +289,52 @@ Official submission body:
   "code": "def solve():\n    print('hello')"
 }
 ```
+
+The `GET /run/:runId` endpoint returns the latest run result stored in Redis.
+
+### Supported Languages
+
+- C
+- CPP
+- JAVA
+- PYTHON
+- JAVASCRIPT
+- TYPESCRIPT
+
+## Judge Flow
+
+1. The API validates the request and creates either a Redis run record or a pending Prisma submission.
+2. A BullMQ job is added to `run_queue` or `submission_queue`.
+3. The worker creates a Kubernetes pod using the language-specific runtime image.
+4. Driver code is generated by replacing `{{USER_CODE}}` with the submitted code.
+5. The code is compiled when needed and executed against custom, public, or hidden test cases.
+6. Results are written back to Redis for runs or Postgres for official submissions.
+7. The sandbox pod is deleted during cleanup.
+
+## Data Model
+
+The Prisma schema defines:
+
+- `User`
+- `Question`
+- `Submission`
+- `Testcase`
+- `Codestub`
+- `CustomChecker`
+
+Important enums:
+
+- `DifficultyType`: `EASY`, `MEDIUM`, `HARD`
+- `LanguageType`: `CPP`, `C`, `JAVA`, `PYTHON`, `JAVASCRIPT`, `TYPESCRIPT`
+- `ResultType`: `PENDING`, `RUNNING`, `SUCCESS`, `WRONG`, `RUNTIME_ERROR`, `COMPILE_ERROR`, `TIME_LIMIT_EXCEEDED`, `MEMORY_LIMIT_EXCEEDED`, `SYSTEM_ERROR`
+
+## Development Notes
+
+- Authenticated routes read the JWT from the `access_token` cookie.
+- Submission rate limiting enforces a 10-second cooldown per user.
+- Public runs expire from Redis after 5 minutes.
+- The sandbox currently uses the Kubernetes `default` namespace.
+- Language runtimes are pulled from public Docker images such as `gcc`, `openjdk`, `python`, and `node`.
 
 ## Supported Languages
 
