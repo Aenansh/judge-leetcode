@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>nekkodojo :: judge-core</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #060907;
+    --bg-panel: #0b120d;
+    --line: #163322;
+    --green: #4eff8a;
+    --green-dim: #1f6b3e;
+    --green-bright: #b6ffd2;
+    --muted: #5c7a68;
+    --amber: #ffb648;
+    --white-flash: #eafff0;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--green);
+    font-family: 'IBM Plex Mono', 'Courier New', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* CRT scanline + vignette overlay */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 10;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0) 0px,
+      rgba(0, 0, 0, 0) 2px,
+      rgba(0, 0, 0, 0.18) 3px
+    );
+    mix-blend-mode: multiply;
+  }
+
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 11;
+    box-shadow: inset 0 0 14vw rgba(0, 0, 0, 0.85);
+  }
+
+  .screen {
+    position: relative;
+    z-index: 1;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6vh 5vw;
+    animation: flicker 6.5s infinite;
+  }
+
+  @keyframes flicker {
+    0%, 96%, 100% { opacity: 1; }
+    97% { opacity: 0.94; }
+    98% { opacity: 1; }
+    98.5% { opacity: 0.9; }
+  }
+
+  .terminal {
+    width: 100%;
+    max-width: 860px;
+  }
+
+  .eyebrow {
+    color: var(--muted);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin-bottom: 18px;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .boot-log {
+    font-size: 13.5px;
+    line-height: 1.85;
+    min-height: 260px;
+  }
+
+  .boot-log .row { opacity: 0; white-space: pre-wrap; }
+  .boot-log .row.shown { opacity: 1; }
+  .boot-log .ok { color: var(--green); }
+  .boot-log .tag-ok { color: var(--green-bright); font-weight: 600; }
+  .boot-log .tag-ready { color: var(--amber); font-weight: 600; }
+  .boot-log .dim { color: var(--muted); }
+
+  .banner-wrap {
+    margin: 34px 0 22px 0;
+    overflow-x: auto;
+  }
+
+  .banner {
+    font-size: clamp(6px, 1.7vw, 12px);
+    line-height: 1.15;
+    color: var(--green-bright);
+    text-shadow: 0 0 6px rgba(78, 255, 138, 0.55), 0 0 18px rgba(78, 255, 138, 0.25);
+    white-space: pre;
+    opacity: 0;
+    transition: opacity 0.6s ease;
+    letter-spacing: 1px;
+  }
+
+  .banner.shown { opacity: 1; }
+
+  .status-line {
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    gap: 28px;
+    flex-wrap: wrap;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+    margin-bottom: 30px;
+  }
+
+  .status-line.shown { opacity: 1; }
+  .status-line b { color: var(--green); font-weight: 600; }
+
+  .divider {
+    border: none;
+    border-top: 1px dashed var(--line);
+    margin: 26px 0;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+  }
+  .divider.shown { opacity: 1; }
+
+  .panel {
+    opacity: 0;
+    transition: opacity 0.6s ease;
+  }
+  .panel.shown { opacity: 1; }
+
+  .panel-title {
+    color: var(--muted);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    margin-bottom: 12px;
+  }
+  .panel-title::before { content: "$ "; color: var(--green-dim); }
+
+  .features {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 8px 0;
+    font-size: 13.5px;
+    line-height: 2;
+  }
+  .features li { display: flex; gap: 10px; }
+  .features li span.mark { color: var(--amber); flex-shrink: 0; }
+  .features li .label { color: var(--green-bright); }
+  .features li .desc { color: var(--muted); }
+
+  .prompt-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13.5px;
+    margin-top: 4px;
+  }
+  .prompt-tag { color: var(--green-dim); }
+  .cursor {
+    display: inline-block;
+    width: 9px;
+    height: 16px;
+    background: var(--green);
+    animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  footer {
+    margin-top: 34px;
+    font-size: 11px;
+    color: var(--muted);
+    opacity: 0;
+    transition: opacity 0.6s ease;
+  }
+  footer.shown { opacity: 1; }
+
+  @media (max-width: 600px) {
+    .eyebrow { flex-direction: column; gap: 4px; }
+    .status-line { gap: 14px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .screen { animation: none; }
+    .cursor { animation: none; opacity: 1; }
+  }
+</style>
+</head>
+<body>
+
+<div class="screen">
+  <div class="terminal">
+    <div class="eyebrow">
+      <span>nekkodojo // judge-core</span>
+      <span id="clock">00:00:00</span>
+    </div>
+
+    <div class="boot-log" id="bootLog"></div>
+
+    <div class="banner-wrap"><pre class="banner" id="banner"></pre></div>
+
+    <div class="status-line" id="statusLine">
+      <span>uptime <b id="uptime">00:00:00</b></span>
+      <span>queue <b>bullmq/redis</b></span>
+      <span>sandbox <b>k8s + docker</b></span>
+      <span>judge <b>exact · unordered · special</b></span>
+    </div>
+
+    <hr class="divider" id="divider" />
+
+    <div class="panel" id="panel">
+      <div class="panel-title">cat judge_modes.txt</div>
+      <ul class="features">
+        <li><span class="mark">›</span><span class="label">EXACT_MATCH</span><span class="desc">— normalized stdout diff against the stored expected output</span></li>
+        <li><span class="mark">›</span><span class="label">UNORDERED_MATCH</span><span class="desc">— multiset comparison, for "return in any order" problems</span></li>
+        <li><span class="mark">›</span><span class="label">SPECIAL_JUDGE</span><span class="desc">— per-problem checker script, run in an isolated sandbox, validates any correct answer</span></li>
+      </ul>
+
+      <div class="prompt-row">
+        <span class="prompt-tag">nekkodojo@judge</span><span>:</span><span class="prompt-tag">~$</span>
+        <span class="cursor"></span>
+      </div>
+    </div>
+
+    <footer id="pageFooter">judge-core · node/express · every submission runs in its own disposable pod</footer>
+  </div>
+</div>
+
+<script>
+  // ---- 5x5 block glyphs for the boot banner ----
+  const GLYPHS = {
+    S: ["█████","█    ","█████","    █","█████"],
+    E: ["█████","█    ","███  ","█    ","█████"],
+    R: ["████ ","█   █","████ ","█  █ ","█   █"],
+    V: ["█   █","█   █","█   █"," █ █ ","  █  "],
+    I: ["█████","  █  ","  █  ","  █  ","█████"],
+    L: ["█    ","█    ","█    ","█    ","█████"],
+  };
+  const LETTER_GAP = " ";
+  const WORD_GAP = "   ";
+
+  function buildBanner(words) {
+    const rows = ["", "", "", "", ""];
+    words.forEach((word, wIdx) => {
+      [...word].forEach((ch, cIdx) => {
+        const glyph = GLYPHS[ch];
+        for (let r = 0; r < 5; r++) {
+          rows[r] += glyph[r];
+          if (cIdx < word.length - 1) rows[r] += LETTER_GAP;
+        }
+      });
+      if (wIdx < words.length - 1) {
+        for (let r = 0; r < 5; r++) rows[r] += WORD_GAP;
+      }
+    });
+    return rows.join("\n");
+  }
+
+  document.getElementById("banner").textContent = buildBanner(["SERVER", "IS", "LIVE"]);
+
+  // ---- boot log sequence ----
+  const lines = [
+    { html: '<span class="dim">nekkodojo/judge-core v1.0.0 — boot sequence initiated</span>' },
+    { html: '<span class="tag-ok">[ OK ]</span> mounting execution sandbox <span class="dim">(kubernetes + docker, isolated pod per submission)</span>' },
+    { html: '<span class="tag-ok">[ OK ]</span> connecting to job queue <span class="dim">(bullmq / redis)</span>' },
+    { html: '<span class="tag-ok">[ OK ]</span> establishing database connection <span class="dim">(postgres via prisma)</span>' },
+    { html: '<span class="tag-ok">[ OK ]</span> loading judge modules <span class="dim">→</span> EXACT_MATCH, UNORDERED_MATCH, SPECIAL_JUDGE' },
+    { html: '<span class="tag-ok">[ OK ]</span> checker sandbox online <span class="dim">(isolated js runtime, per-problem timeout)</span>' },
+    { html: '<span class="tag-ready">[ READY ]</span> all systems nominal' },
+  ];
+
+  const bootLogEl = document.getElementById("bootLog");
+  lines.forEach(l => {
+    const div = document.createElement("div");
+    div.className = "row ok";
+    div.innerHTML = l.html;
+    bootLogEl.appendChild(div);
+  });
+
+  const rows = bootLogEl.querySelectorAll(".row");
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const stepDelay = reduceMotion ? 0 : 220;
+
+  function reveal(el, delay) {
+    setTimeout(() => el.classList.add("shown"), delay);
+  }
+
+  rows.forEach((row, i) => reveal(row, i * stepDelay));
+
+  const afterLogDelay = rows.length * stepDelay + 300;
+  reveal(document.getElementById("banner"), afterLogDelay);
+  reveal(document.getElementById("statusLine"), afterLogDelay + 500);
+  reveal(document.getElementById("divider"), afterLogDelay + 650);
+  reveal(document.getElementById("panel"), afterLogDelay + 800);
+  reveal(document.getElementById("pageFooter"), afterLogDelay + 950);
+
+  // ---- live clock + uptime ----
+  const startTime = Date.now();
+  function pad(n) { return String(n).padStart(2, "0"); }
+
+  function fmtClock(d) {
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+
+  function fmtUptime(ms) {
+    const total = Math.floor(ms / 1000);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    return `${pad(h)}:${pad(m)}:${pad(s)}`;
+  }
+
+  function tick() {
+    document.getElementById("clock").textContent = fmtClock(new Date());
+    document.getElementById("uptime").textContent = fmtUptime(Date.now() - startTime);
+  }
+  tick();
+  setInterval(tick, 1000);
+</script>
+
+</body>
+</html>

@@ -4,6 +4,10 @@ import { ExecutionSandbox } from "../utils/jobgenerate.util.js";
 import prisma from "../config/db.config.js";
 import redis from "../config/redis.config.js";
 import { performance } from "perf_hooks";
+import {
+  runCustomChecker,
+  unorderedMatchCheck,
+} from "../utils/checkrunner.util.js";
 
 const normalizeOutput = (output) => {
   if (typeof output !== "string") return "";
@@ -98,8 +102,16 @@ export const runWorker = new Worker(
 
       const question = await prisma.question.findUnique({
         where: { id: questionId },
-        select: { hasChecker: true, checkerCode: true },
+        select: {
+          judgeType: true,
+          checkerCode: {
+            orderBy: { version: "desc" },
+            take: 1,
+          },
+        },
       });
+
+      const activeChecker = question?.checkers?.[0] ?? null;
 
       for (let idx = 0; idx < testcasesToRun.length; idx++) {
         const tc = testcasesToRun[idx];
@@ -110,30 +122,25 @@ export const runWorker = new Worker(
         const normalizedExpected = normalizeOutput(tc.expectedOutput || "");
 
         let passed = false;
+        let checkerReason = null;
 
         if (!result.success) {
           passed = false;
         } else if (tc.expectedOutput === null) {
           passed = true;
-        } else if (question?.hasChecker && question?.checkerCode) {
+        } else if (question.judgeType === "SPECIAL_JUDGE") {
           console.log(`[Run Worker] Using Custom Checker for TC ${idx + 1}`);
-          try {
-            const checkerFn = new Function(
-              "input",
-              "actualOutput",
-              "expectedOutput",
-              `return (${question.checkerCode})(input, actualOutput, expectedOutput);`,
-            );
-            passed = Boolean(
-              checkerFn(tc.input, result.output, tc.expectedOutput),
-            );
-          } catch (checkerErr) {
-            console.error(
-              `[Run Worker] Checker execution error on TC ${idx + 1}:`,
-              checkerErr,
-            );
-            passed = false;
-          }
+          const checkResult = await runCustomChecker({
+            checker: activeChecker,
+            input: tc.input,
+            actualOutput: result.output,
+            expectedOutput: tc.expectedOutput,
+          });
+
+          passed = checkResult.passed;
+          checkerReason = checkResult.reason;
+        } else if (question?.judgeType === "UNORDERED_MATCH") {
+          passed = unorderedMatchCheck(normalizedActual, normalizedExpected);
         } else {
           passed = normalizedActual === normalizedExpected;
         }
@@ -147,6 +154,7 @@ export const runWorker = new Worker(
           actualOutput: normalizedActual,
           passed: passed,
           error: result.success ? null : result.output,
+          checkerReason,
         });
 
         if (passed) {
@@ -207,8 +215,13 @@ export const submissionWorker = new Worker(
 
       const question = await prisma.question.findUnique({
         where: { id: questionId },
-        select: { hasChecker: true, checkerCode: true },
+        select: {
+          judgeType: true,
+          checkers: { orderBy: { version: "desc" }, take: 1 },
+        },
       });
+
+      const activeChecker = question?.checkers?.[0] ?? null;
 
       if (!driver || !driver.driverCode)
         throw new Error(`Driver code not found for language: ${language}`);
@@ -296,33 +309,26 @@ export const submissionWorker = new Worker(
         }
 
         let isCorrect = false;
-
-        if (question?.hasCustomChecker && question?.checkerCode) {
-          try {
-            const checkerFn = new Function(
-              "input",
-              "actualOutput",
-              "expectedOutput",
-              `return (${question.checkerCode})(input, actualOutput, expectedOutput);`,
-            );
-
-            isCorrect = Boolean(
-              checkerFn(tc.input, runRes.output, tc.expectedOutput),
-            );
-          } catch (checkerErr) {
-            console.error(
-              `[Submission Worker] Custom Checker Error on TC ${idx + 1}:`,
-              checkerErr,
-            );
-            isCorrect = false;
-          }
+        let checkerReason = null;
+        
+        if (question.judgeType === "SPECIAL_JUDGE") {
+          const checkResult = await runCustomChecker({
+            checker: activeChecker,
+            input: tc.input,
+            actualOutput: runRes.output,
+            expectedOutput: tc.expectedOutput,
+          });
+          isCorrect = checkResult.passed;
+          checkerReason = checkResult.reason;
+        } else if (question?.judgeType === "UNORDERED_MATCH") {
+          isCorrect = unorderedMatchCheck(normalizedActual, normalizedExpected);
         } else {
           isCorrect = normalizedActual === normalizedExpected;
         }
 
         if (!isCorrect) {
           finalVerdict = "WRONG";
-          errorLog = buildErrorPayload("Mismatch or Invalid Output Logic");
+          errorLog = buildErrorPayload(checkerReason || "Mismatch or Invalid Output Logic");
           console.log(
             `   └─ [TC ${idx + 1}] ❌ Failed: Output validation failed. \nInput: ${tc.input}\nExpected Output: ${normalizedExpected}\nYour Output: ${normalizedActual}`,
           );
