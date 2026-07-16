@@ -3,7 +3,8 @@ import prisma from "../config/db.config.js";
 
 const createQuestion = async (req, res) => {
   try {
-    const { title, description, difficulty, category } = req.body;
+    const { title, description, difficulty, category, hasChecker, judgeType } =
+      req.body;
     if (
       [title, description, difficulty].some(
         (e) => typeof e !== "string" || !e.trim(),
@@ -37,6 +38,8 @@ const createQuestion = async (req, res) => {
         difficulty,
         slug: slugTitle,
         category,
+        hasChecker,
+        judgeType,
       },
     });
 

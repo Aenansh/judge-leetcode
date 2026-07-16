@@ -11,7 +11,7 @@ export const LANGUAGE_CONFIG = {
   C: {
     image: "gcc:latest",
     compile: (code) =>
-      `mkdir -p /sandbox && cd /sandbox && printf "%s" "${b64Encode(code)}" | base64 -d > main.c && gcc main.c -o app.bin > build.log 2>&1 || (cat build.log >&2 && exit 1)`,
+      `mkdir -p /sandbox && cd /sandbox && printf "%s" "${b64Encode(code)}" | base64 -d > main.c && gcc main.c -o app.bin -lm > build.log 2>&1 || (cat build.log >&2 && exit 1)`,
     run: (input) =>
       `cd /sandbox && printf "%s" "${b64Encode(input)}" | base64 -d > in.txt && timeout 5s ./app.bin < in.txt`,
   },
