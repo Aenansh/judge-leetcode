@@ -111,7 +111,7 @@ export const runWorker = new Worker(
         },
       });
 
-      const activeChecker = question?.checkers?.[0] ?? null;
+      const activeChecker = question?.checkerCode?.[0] ?? null;
 
       for (let idx = 0; idx < testcasesToRun.length; idx++) {
         const tc = testcasesToRun[idx];
@@ -217,11 +217,11 @@ export const submissionWorker = new Worker(
         where: { id: questionId },
         select: {
           judgeType: true,
-          checkers: { orderBy: { version: "desc" }, take: 1 },
+          checkerCode: { orderBy: { version: "desc" }, take: 1 },
         },
       });
 
-      const activeChecker = question?.checkers?.[0] ?? null;
+      const activeChecker = question?.checkerCode?.[0] ?? null;
 
       if (!driver || !driver.driverCode)
         throw new Error(`Driver code not found for language: ${language}`);

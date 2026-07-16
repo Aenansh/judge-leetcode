@@ -43,15 +43,11 @@ export async function runCustomChecker({
       ${checker.scriptSource}
 
       (function() {
-        const parseMaybe = (s) => {
-          if (s === null) return null;
-          try { return JSON.parse(s); } catch { return s; }
-        };
-        const result = check(parseMaybe(${inputLiteral}), ${actualLiteral}, parseMaybe(${expectedLiteral}));
+        const result = check(${inputLiteral}, ${actualLiteral}, ${expectedLiteral});
         const normalized = (typeof result === "boolean")
           ? { passed: result, reason: null }
           : { passed: Boolean(result && result.passed), reason: (result && result.reason) || null };
-        JSON.stringify(normalized);
+        return JSON.stringify(normalized);
       })();
     `;
 
